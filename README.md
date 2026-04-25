@@ -27,6 +27,53 @@ uv run camuse --width 960 --height 540
 uv run camuse --print-json
 ```
 
+## Control Serum 2 Parameters
+
+Camuse sends MIDI CC values that Serum 2 can learn on its knobs and sliders.
+This keeps Serum running inside your DAW while the camera tracker acts like a
+MIDI controller.
+
+On Windows, create a virtual MIDI port with a tool such as loopMIDI, enable
+that port as a MIDI input in your DAW, and route it to the track containing
+Serum 2. Then list the output ports Camuse can see:
+
+```powershell
+uv run camuse --list-midi-ports
+```
+
+Start tracking with MIDI enabled:
+
+```powershell
+uv run camuse --midi-port "Camuse"
+```
+
+In Serum 2, right-click a knob or slider, choose MIDI Learn, then move the
+camera control you want to assign. Serum 2 assigns the incoming CC to that
+parameter. See Xfer's Serum 2 manual section on
+[using knobs and sliders](https://xferrecords.com/web-manual/serum-2/using-knobs-and-sliders)
+for the MIDI Learn behavior.
+
+Default MIDI mappings:
+
+| Camera input | MIDI CC | Notes |
+| --- | ---: | --- |
+| Palm X | 20 | Left to right maps 0 to 127 |
+| Palm Y | 21 | Raising your palm increases the value |
+| Index fingertip X | 22 | Left to right maps 0 to 127 |
+| Index fingertip Y | 23 | Raising your fingertip increases the value |
+| Mouth openness | 24 | Closed to open maps 0 to 127 |
+
+Useful MIDI options:
+
+```powershell
+uv run camuse --midi-port "Camuse" --control-hand Right
+uv run camuse --midi-port "Camuse" --cc-palm-x 74 --cc-mouth 1
+uv run camuse --midi-port "Camuse" --cc-index-x -1 --cc-index-y -1
+uv run camuse --midi-port "Camuse" --midi-smoothing 0.2 --midi-deadband 2
+```
+
+Use `-1` for any CC option to disable that camera input.
+
 Controls:
 
 - Press `q` or `Esc` to quit.

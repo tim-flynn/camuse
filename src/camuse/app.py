@@ -9,10 +9,13 @@ from typing import Iterable
 
 import cv2
 import mediapipe as mp
+import mido
 import numpy as np
 
 
 WINDOW_NAME = "Camuse tracker"
+MIDI_CC_MIN = 0
+MIDI_CC_MAX = 127
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,56 @@ class FrameState:
     mouth: MouthState | None
 
 
+@dataclass(frozen=True)
+class MidiConfig:
+    port: str | None
+    channel: int
+    control_hand: str
+    smoothing: float
+    deadband: int
+    mouth_open_max: float
+    cc_palm_x: int
+    cc_palm_y: int
+    cc_index_x: int
+    cc_index_y: int
+    cc_mouth: int
+
+
+def cc_number(value: str) -> int:
+    number = int(value)
+    if number != -1 and not MIDI_CC_MIN <= number <= MIDI_CC_MAX:
+        raise argparse.ArgumentTypeError("MIDI CC must be -1 or between 0 and 127.")
+    return number
+
+
+def midi_channel(value: str) -> int:
+    channel = int(value)
+    if not 1 <= channel <= 16:
+        raise argparse.ArgumentTypeError("MIDI channel must be between 1 and 16.")
+    return channel
+
+
+def normalized_float(value: str) -> float:
+    number = float(value)
+    if not 0.0 <= number <= 1.0:
+        raise argparse.ArgumentTypeError("Value must be between 0.0 and 1.0.")
+    return number
+
+
+def nonnegative_int(value: str) -> int:
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("Value must be 0 or greater.")
+    return number
+
+
+def positive_float(value: str) -> float:
+    number = float(value)
+    if number <= 0.0:
+        raise argparse.ArgumentTypeError("Value must be greater than 0.")
+    return number
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Track hand position and mouth openness from a webcam."
@@ -63,7 +116,95 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print one JSON state line per processed frame.",
     )
+    parser.add_argument(
+        "--list-midi-ports",
+        action="store_true",
+        help="List available MIDI output ports and exit.",
+    )
+    parser.add_argument(
+        "--midi-port",
+        help=(
+            "MIDI output port to send CC values to. On Windows this is usually "
+            "a virtual MIDI port from a tool such as loopMIDI."
+        ),
+    )
+    parser.add_argument(
+        "--midi-channel",
+        type=midi_channel,
+        default=1,
+        help="MIDI channel to send CC values on, from 1 to 16.",
+    )
+    parser.add_argument(
+        "--control-hand",
+        choices=("first", "Left", "Right"),
+        default="first",
+        help="Which tracked hand should drive hand MIDI CC values.",
+    )
+    parser.add_argument(
+        "--midi-smoothing",
+        type=normalized_float,
+        default=0.35,
+        help="MIDI smoothing amount. 1.0 follows tracking immediately; lower is smoother.",
+    )
+    parser.add_argument(
+        "--midi-deadband",
+        type=nonnegative_int,
+        default=1,
+        help="Minimum CC value change before sending another message.",
+    )
+    parser.add_argument(
+        "--mouth-open-max",
+        type=positive_float,
+        default=0.45,
+        help="Mouth openness value that maps to MIDI 127.",
+    )
+    parser.add_argument(
+        "--cc-palm-x",
+        type=cc_number,
+        default=20,
+        help="CC for palm horizontal position. Use -1 to disable.",
+    )
+    parser.add_argument(
+        "--cc-palm-y",
+        type=cc_number,
+        default=21,
+        help="CC for palm vertical position. Use -1 to disable.",
+    )
+    parser.add_argument(
+        "--cc-index-x",
+        type=cc_number,
+        default=22,
+        help="CC for index fingertip horizontal position. Use -1 to disable.",
+    )
+    parser.add_argument(
+        "--cc-index-y",
+        type=cc_number,
+        default=23,
+        help="CC for index fingertip vertical position. Use -1 to disable.",
+    )
+    parser.add_argument(
+        "--cc-mouth",
+        type=cc_number,
+        default=24,
+        help="CC for mouth openness. Use -1 to disable.",
+    )
     return parser.parse_args()
+
+
+def midi_config_from_args(args: argparse.Namespace) -> MidiConfig:
+    return MidiConfig(
+        port=args.midi_port,
+        channel=args.midi_channel,
+        control_hand=args.control_hand,
+        smoothing=args.midi_smoothing,
+        deadband=args.midi_deadband,
+        mouth_open_max=args.mouth_open_max,
+        cc_palm_x=args.cc_palm_x,
+        cc_palm_y=args.cc_palm_y,
+        cc_index_x=args.cc_index_x,
+        cc_index_y=args.cc_index_y,
+        cc_mouth=args.cc_mouth,
+    )
 
 
 def distance(a: Point, b: Point) -> float:
@@ -87,6 +228,10 @@ def pixel(point: Point, width: int, height: int) -> tuple[int, int]:
         int(np.clip(point.x, 0.0, 1.0) * width),
         int(np.clip(point.y, 0.0, 1.0) * height),
     )
+
+
+def midi_value(value: float) -> int:
+    return int(round(float(np.clip(value, 0.0, 1.0)) * MIDI_CC_MAX))
 
 
 def extract_hands(hand_results: object) -> list[HandState]:
@@ -222,6 +367,102 @@ def print_state(state: FrameState) -> None:
     print(json.dumps(asdict(state), separators=(",", ":")), flush=True)
 
 
+def list_midi_ports() -> None:
+    names = mido.get_output_names()
+    if not names:
+        print("No MIDI output ports found.")
+        return
+
+    print("MIDI output ports:")
+    for name in names:
+        print(f"- {name}")
+
+
+def resolve_midi_port(port: str) -> str:
+    names = mido.get_output_names()
+    if port in names:
+        return port
+
+    matches = [name for name in names if port.lower() in name.lower()]
+    if len(matches) == 1:
+        return matches[0]
+
+    if matches:
+        choices = "\n".join(f"- {name}" for name in matches)
+        raise RuntimeError(
+            f'MIDI port "{port}" matched multiple output ports:\n{choices}\n'
+            "Use the full port name."
+        )
+
+    available = "\n".join(f"- {name}" for name in names) or "- none"
+    raise RuntimeError(
+        f'MIDI output port "{port}" was not found.\n'
+        f"Available output ports:\n{available}"
+    )
+
+
+def select_control_hand(hands: list[HandState], preference: str) -> HandState | None:
+    if not hands:
+        return None
+    if preference == "first":
+        return hands[0]
+
+    return next((hand for hand in hands if hand.label == preference), None)
+
+
+class MidiController:
+    def __init__(self, config: MidiConfig) -> None:
+        if config.port is None:
+            raise ValueError("A MIDI port is required.")
+
+        self.config = config
+        self.port_name = resolve_midi_port(config.port)
+        self.output = mido.open_output(self.port_name)
+        self.channel = config.channel - 1
+        self.smoothed_values: dict[int, float] = {}
+        self.sent_values: dict[int, int] = {}
+
+    def close(self) -> None:
+        self.output.close()
+
+    def send(self, cc: int, value: float) -> None:
+        if cc == -1:
+            return
+
+        target = midi_value(value)
+        previous = self.smoothed_values.get(cc, float(target))
+        smoothed = previous + ((target - previous) * self.config.smoothing)
+        quantized = int(round(smoothed))
+        last_sent = self.sent_values.get(cc)
+
+        self.smoothed_values[cc] = smoothed
+        if last_sent is not None and abs(quantized - last_sent) < self.config.deadband:
+            return
+
+        message = mido.Message(
+            "control_change",
+            channel=self.channel,
+            control=cc,
+            value=quantized,
+        )
+        self.output.send(message)
+        self.sent_values[cc] = quantized
+
+    def update(self, state: FrameState) -> None:
+        hand = select_control_hand(state.hands, self.config.control_hand)
+        if hand is not None:
+            self.send(self.config.cc_palm_x, hand.palm_center.x)
+            self.send(self.config.cc_palm_y, 1.0 - hand.palm_center.y)
+            self.send(self.config.cc_index_x, hand.index_tip.x)
+            self.send(self.config.cc_index_y, 1.0 - hand.index_tip.y)
+
+        if state.mouth is not None:
+            self.send(
+                self.config.cc_mouth,
+                state.mouth.openness / self.config.mouth_open_max,
+            )
+
+
 def open_camera(camera_index: int, width: int, height: int) -> cv2.VideoCapture:
     capture = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
     if not capture.isOpened():
@@ -244,11 +485,16 @@ def run_tracker(args: argparse.Namespace) -> None:
     mp_face_mesh = mp.solutions.face_mesh
     drawing_utils = mp.solutions.drawing_utils
 
-    capture = open_camera(args.camera, args.width, args.height)
+    midi_config = midi_config_from_args(args)
+    midi_controller: MidiController | None = None
+    capture: cv2.VideoCapture | None = None
     previous_time = time.perf_counter()
     fps = 0.0
 
     try:
+        midi_controller = MidiController(midi_config) if midi_config.port else None
+        capture = open_camera(args.camera, args.width, args.height)
+
         with (
             mp_hands.Hands(
                 static_image_mode=False,
@@ -300,19 +546,27 @@ def run_tracker(args: argparse.Namespace) -> None:
 
                 if args.print_json:
                     print_state(state)
+                if midi_controller is not None:
+                    midi_controller.update(state)
 
                 cv2.imshow(WINDOW_NAME, frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (27, ord("q")):
                     break
     finally:
-        capture.release()
+        if midi_controller is not None:
+            midi_controller.close()
+        if capture is not None:
+            capture.release()
         cv2.destroyAllWindows()
 
 
 def main() -> None:
     args = parse_args()
     try:
+        if args.list_midi_ports:
+            list_midi_ports()
+            return
         run_tracker(args)
     except KeyboardInterrupt:
         pass
