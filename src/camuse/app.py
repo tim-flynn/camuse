@@ -5,7 +5,7 @@ import json
 import math
 import time
 from dataclasses import asdict, dataclass
-from typing import Iterable
+from typing import Callable, Iterable
 
 import cv2
 import mediapipe as mp
@@ -16,6 +16,13 @@ import numpy as np
 WINDOW_NAME = "Camuse tracker"
 MIDI_CC_MIN = 0
 MIDI_CC_MAX = 127
+MIDI_INPUT_DEFINITIONS = (
+    ("palm_x", "Palm X", "cc_palm_x"),
+    ("palm_y", "Palm Y", "cc_palm_y"),
+    ("index_x", "Index X", "cc_index_x"),
+    ("index_y", "Index Y", "cc_index_y"),
+    ("mouth", "Mouth", "cc_mouth"),
+)
 
 
 @dataclass(frozen=True)
@@ -353,12 +360,44 @@ def draw_status(frame: np.ndarray, fps: float, hand_count: int) -> None:
     height = frame.shape[0]
     cv2.putText(
         frame,
-        f"Hands: {hand_count}   FPS: {fps:.1f}   Press q or Esc to quit",
+        f"Hands: {hand_count}   FPS: {fps:.1f}   1-5 toggle MIDI inputs   q/Esc quits",
         (20, height - 24),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.65,
         (255, 255, 255),
         2,
+        cv2.LINE_AA,
+    )
+
+
+def draw_midi_status(
+    frame: np.ndarray,
+    midi_controller: MidiController | None,
+    midi_controls: MidiInputControls,
+) -> None:
+    height, width = frame.shape[:2]
+    input_states = "   ".join(
+        f"{index}: {label} {midi_controls.status_label(name)}"
+        for index, (name, label, _) in enumerate(MIDI_INPUT_DEFINITIONS, start=1)
+    )
+    output = midi_controller.port_name if midi_controller is not None else "no output"
+    text = f"MIDI -> {output}   {input_states}"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 0.55
+    thickness = 2
+    text_width = cv2.getTextSize(text, font, scale, thickness)[0][0]
+    max_width = max(width - 40, 1)
+    if text_width > max_width:
+        scale = max(0.35, scale * (max_width / text_width))
+
+    cv2.putText(
+        frame,
+        text,
+        (20, height - 56),
+        font,
+        scale,
+        (255, 255, 255),
+        thickness,
         cv2.LINE_AA,
     )
 
@@ -410,6 +449,67 @@ def select_control_hand(hands: list[HandState], preference: str) -> HandState | 
     return next((hand for hand in hands if hand.label == preference), None)
 
 
+class MidiInputControls:
+    def __init__(self, config: MidiConfig) -> None:
+        self.available = {
+            name: getattr(config, cc_attribute) != -1
+            for name, _, cc_attribute in MIDI_INPUT_DEFINITIONS
+        }
+        self.enabled = {
+            name: self.available[name] for name, _, _ in MIDI_INPUT_DEFINITIONS
+        }
+        self.trackbars: dict[str, str] = {}
+
+    def create(self) -> None:
+        cv2.namedWindow(WINDOW_NAME)
+        for name, label, _ in MIDI_INPUT_DEFINITIONS:
+            value = int(self.enabled[name])
+            trackbar = f"Send {label}"
+            self.trackbars[name] = trackbar
+            cv2.createTrackbar(
+                trackbar,
+                WINDOW_NAME,
+                value,
+                1,
+                self._set_enabled_callback(name),
+            )
+
+    def is_enabled(self, name: str) -> bool:
+        return self.available.get(name, False) and self.enabled.get(name, False)
+
+    def toggle_by_index(self, index: int) -> None:
+        if not 0 <= index < len(MIDI_INPUT_DEFINITIONS):
+            return
+
+        name = MIDI_INPUT_DEFINITIONS[index][0]
+        if not self.available[name]:
+            return
+
+        self.enabled[name] = not self.enabled[name]
+        cv2.setTrackbarPos(
+            self.trackbars[name],
+            WINDOW_NAME,
+            int(self.enabled[name]),
+        )
+
+    def status_label(self, name: str) -> str:
+        if not self.available.get(name, False):
+            return "unmapped"
+        return "on" if self.enabled.get(name, False) else "off"
+
+    def _set_enabled_callback(self, name: str) -> Callable[[int], None]:
+        def set_enabled(value: int) -> None:
+            if not self.available[name]:
+                self.enabled[name] = False
+                if value != 0:
+                    cv2.setTrackbarPos(self.trackbars[name], WINDOW_NAME, 0)
+                return
+
+            self.enabled[name] = value == 1
+
+        return set_enabled
+
+
 class MidiController:
     def __init__(self, config: MidiConfig) -> None:
         if config.port is None:
@@ -448,15 +548,26 @@ class MidiController:
         self.output.send(message)
         self.sent_values[cc] = quantized
 
-    def update(self, state: FrameState) -> None:
+    def update(
+        self,
+        state: FrameState,
+        input_controls: MidiInputControls | None = None,
+    ) -> None:
+        def enabled(name: str) -> bool:
+            return input_controls is None or input_controls.is_enabled(name)
+
         hand = select_control_hand(state.hands, self.config.control_hand)
         if hand is not None:
-            self.send(self.config.cc_palm_x, hand.palm_center.x)
-            self.send(self.config.cc_palm_y, 1.0 - hand.palm_center.y)
-            self.send(self.config.cc_index_x, hand.index_tip.x)
-            self.send(self.config.cc_index_y, 1.0 - hand.index_tip.y)
+            if enabled("palm_x"):
+                self.send(self.config.cc_palm_x, hand.palm_center.x)
+            if enabled("palm_y"):
+                self.send(self.config.cc_palm_y, 1.0 - hand.palm_center.y)
+            if enabled("index_x"):
+                self.send(self.config.cc_index_x, hand.index_tip.x)
+            if enabled("index_y"):
+                self.send(self.config.cc_index_y, 1.0 - hand.index_tip.y)
 
-        if state.mouth is not None:
+        if state.mouth is not None and enabled("mouth"):
             self.send(
                 self.config.cc_mouth,
                 state.mouth.openness / self.config.mouth_open_max,
@@ -487,11 +598,13 @@ def run_tracker(args: argparse.Namespace) -> None:
 
     midi_config = midi_config_from_args(args)
     midi_controller: MidiController | None = None
+    midi_controls = MidiInputControls(midi_config)
     capture: cv2.VideoCapture | None = None
     previous_time = time.perf_counter()
     fps = 0.0
 
     try:
+        midi_controls.create()
         midi_controller = MidiController(midi_config) if midi_config.port else None
         capture = open_camera(args.camera, args.width, args.height)
 
@@ -543,16 +656,19 @@ def run_tracker(args: argparse.Namespace) -> None:
                 )
                 draw_mouth(frame, mouth)
                 draw_status(frame, fps, len(hands))
+                draw_midi_status(frame, midi_controller, midi_controls)
 
                 if args.print_json:
                     print_state(state)
                 if midi_controller is not None:
-                    midi_controller.update(state)
+                    midi_controller.update(state, midi_controls)
 
                 cv2.imshow(WINDOW_NAME, frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (27, ord("q")):
                     break
+                if ord("1") <= key <= ord("5"):
+                    midi_controls.toggle_by_index(key - ord("1"))
     finally:
         if midi_controller is not None:
             midi_controller.close()

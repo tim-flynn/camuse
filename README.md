@@ -76,6 +76,11 @@ Use `-1` for any CC option to disable that camera input.
 
 Controls:
 
+- Use the tracker window's `Send Palm X`, `Send Palm Y`, `Send Index X`,
+  `Send Index Y`, and `Send Mouth` sliders as on/off switches for MIDI output.
+  Inputs configured with CC `-1` stay unmapped.
+- Press number keys `1` through `5` to toggle those same MIDI inputs from the
+  camera window.
 - Press `q` or `Esc` to quit.
 
 ## What The App Tracks
