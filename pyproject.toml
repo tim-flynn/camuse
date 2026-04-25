@@ -1,0 +1,21 @@
+[project]
+name = "camuse"
+version = "0.1.0"
+description = "Camera-driven body tracking playground for hands and mouth movement."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "mediapipe>=0.10.14,<0.10.30",
+    "numpy>=1.26",
+    "opencv-contrib-python>=4.9",
+]
+
+[project.scripts]
+camuse = "camuse.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
