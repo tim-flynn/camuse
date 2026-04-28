@@ -1,8 +1,8 @@
 # Camuse
 
-Camera-based body tracking prototype. For now it opens your webcam, tracks hand
-positions, and estimates mouth openness. Later this can become a music
-playground driven by body movement.
+Camera-based MIDI control prototype. Camuse opens your webcam, tracks hand
+positions and mouth openness, and can send those movements as MIDI CC values to
+a DAW or synth plugin such as Serum 2.
 
 ## Requirements
 
@@ -15,6 +15,8 @@ reliable there.
 
 ## Run
 
+From the project root:
+
 ```powershell
 uv run camuse
 ```
@@ -24,7 +26,15 @@ Useful options:
 ```powershell
 uv run camuse --camera 1
 uv run camuse --width 960 --height 540
+uv run camuse --max-hands 1
+uv run camuse --no-mirror
 uv run camuse --print-json
+```
+
+Show every CLI option:
+
+```powershell
+uv run camuse --help
 ```
 
 ## Control Serum 2 Parameters
@@ -67,12 +77,15 @@ Useful MIDI options:
 
 ```powershell
 uv run camuse --midi-port "Camuse" --control-hand Right
+uv run camuse --midi-port "Camuse" --midi-channel 2
 uv run camuse --midi-port "Camuse" --cc-palm-x 74 --cc-mouth 1
 uv run camuse --midi-port "Camuse" --cc-index-x -1 --cc-index-y -1
 uv run camuse --midi-port "Camuse" --midi-smoothing 0.2 --midi-deadband 2
+uv run camuse --midi-port "Camuse" --mouth-open-max 0.35
 ```
 
 Use `-1` for any CC option to disable that camera input.
+Use `--mouth-open-max` to calibrate how much mouth movement maps to MIDI 127.
 
 Controls:
 
@@ -85,8 +98,9 @@ Controls:
 
 ## What The App Tracks
 
-- `hands`: each detected hand includes `wrist`, `index_tip`, and `palm_center`
-  coordinates normalized from `0.0` to `1.0`.
+- `hands`: each detected hand includes `label`, `score`, `wrist`,
+  `index_tip`, and `palm_center` values. Coordinates are normalized from `0.0`
+  to `1.0`.
 - `mouth.openness`: distance between the upper and lower lip, normalized by
   mouth width. Bigger values mean a more open mouth.
 
