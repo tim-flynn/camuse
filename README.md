@@ -43,7 +43,7 @@ Camuse sends MIDI CC values that Serum 2 can learn on its knobs and sliders.
 This keeps Serum running inside your DAW while the camera tracker acts like a
 MIDI controller.
 
-On Windows, create a virtual MIDI port with a tool such as loopMIDI, enable
+On Windows, create a virtual MIDI port with a tool such as [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html), enable
 that port as a MIDI input in your DAW, and route it to the track containing
 Serum 2. Then list the output ports Camuse can see:
 
